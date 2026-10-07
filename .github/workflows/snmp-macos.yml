@@ -47,7 +47,7 @@ jobs:
           sudo cp agente/ATIVIDADE-SNMP-MIB.txt $NETSNMP/share/snmp/mibs/
 
           # script do agente (objetos customizados)
-          sudo mkdir -p /opt/snmp-atividade /var/lib/snmp
+          sudo mkdir -p /opt/snmp-atividade /var/lib/snmp /var/lib/net-snmp
           sudo cp agente/agente_atividade.py /opt/snmp-atividade/
           sudo chmod +x /opt/snmp-atividade/agente_atividade.py
 
@@ -56,9 +56,12 @@ jobs:
           agentaddress udp:161
           rocommunity public  default
           rwcommunity private default
-          sysLocation  Laboratorio de Redes, macOS
-          sysContact   equipe@exemplo.com
           sysServices  72
+          # sysLocation e sysContact NAO sao definidos aqui de proposito:
+          # quando vem do arquivo de configuracao, o Net-SNMP os deixa read-only
+          # e o SET falha com notWritable. Sem eles, o agente aceita o SET e
+          # grava o valor no diretorio persistente abaixo.
+          persistentDir /var/lib/net-snmp
           trap2sink 127.0.0.1 public
           authtrapenable 1
           pass_persist .1.3.6.1.4.1.99999 /opt/snmp-atividade/agente_atividade.py
@@ -100,11 +103,15 @@ jobs:
           snmpgetnext -v 2c -c public localhost sysUpTime.0
           echo
           echo "===== SET: sysLocation.0 ====="
-          echo "valor antes:"
+          echo "valor antes do SET:"
           snmpget -v 2c -c public localhost sysLocation.0
+          echo "executando o SET:"
           snmpset -v 2c -c private localhost sysLocation.0 s "Sala 12, macOS, alterado por SET"
-          echo "valor depois:"
+          echo "valor depois do SET:"
           snmpget -v 2c -c public localhost sysLocation.0
+          echo
+          echo "===== SET em sysName.0 ====="
+          snmpset -v 2c -c private localhost sysName.0 s "agente-macos-equipe"
           echo
           echo "===== WALK no grupo system ====="
           snmpwalk -v 2c -c public localhost system
