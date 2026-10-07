@@ -1,0 +1,148 @@
+ATIVIDADE-SNMP-MIB DEFINITIONS ::= BEGIN
+
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, NOTIFICATION-TYPE,
+    Integer32, Gauge32, enterprises
+        FROM SNMPv2-SMI
+    DisplayString
+        FROM SNMPv2-TC;
+
+atividadeSnmpMIB MODULE-IDENTITY
+    LAST-UPDATED "202610070000Z"
+    ORGANIZATION "Disciplina de Gerenciamento de Redes"
+    CONTACT-INFO "Equipe da atividade pratica de SNMP"
+    DESCRIPTION  "MIB de exemplo com objetos personalizados: um escalar
+                  estatico de leitura e escrita, escalares dinamicos e uma
+                  tabela com tres colunas acessiveis."
+    REVISION     "202610070000Z"
+    DESCRIPTION  "Versao inicial."
+    ::= { enterprises 99999 }
+
+atvObjetos    OBJECT IDENTIFIER ::= { atividadeSnmpMIB 1 }
+atvNotificacoes OBJECT IDENTIFIER ::= { atividadeSnmpMIB 0 }
+
+atvEstatico   OBJECT IDENTIFIER ::= { atvObjetos 1 }
+atvDinamico   OBJECT IDENTIFIER ::= { atvObjetos 2 }
+atvTabelas    OBJECT IDENTIFIER ::= { atvObjetos 3 }
+
+-- ---------------------------------------------------------------
+-- 1) Objeto escalar estatico (read-write)
+-- ---------------------------------------------------------------
+
+atvNomeEquipe OBJECT-TYPE
+    SYNTAX      DisplayString (SIZE (0..64))
+    MAX-ACCESS  read-write
+    STATUS      current
+    DESCRIPTION "Nome da equipe responsavel pelo agente. O valor e gravado
+                 em disco pelo agente, entao sobrevive a reinicializacao."
+    ::= { atvEstatico 1 }
+
+atvLocalLaboratorio OBJECT-TYPE
+    SYNTAX      DisplayString (SIZE (0..64))
+    MAX-ACCESS  read-write
+    STATUS      current
+    DESCRIPTION "Local fisico onde o agente esta instalado."
+    ::= { atvEstatico 2 }
+
+-- ---------------------------------------------------------------
+-- 2) Objetos dinamicos (read-only, calculados a cada consulta)
+-- ---------------------------------------------------------------
+
+atvDataHora OBJECT-TYPE
+    SYNTAX      DisplayString (SIZE (0..32))
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Data e hora atuais do sistema onde roda o agente."
+    ::= { atvDinamico 1 }
+
+atvMemoriaLivreMB OBJECT-TYPE
+    SYNTAX      Gauge32
+    UNITS       "megabytes"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Memoria livre do sistema, em megabytes, no instante da consulta."
+    ::= { atvDinamico 2 }
+
+atvProcessosAtivos OBJECT-TYPE
+    SYNTAX      Gauge32
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Quantidade de processos em execucao no instante da consulta."
+    ::= { atvDinamico 3 }
+
+atvLimiteMemoriaMB OBJECT-TYPE
+    SYNTAX      Integer32 (0..1048576)
+    MAX-ACCESS  read-write
+    STATUS      current
+    DESCRIPTION "Limite de memoria livre, em megabytes. Quando a memoria livre
+                 fica abaixo deste valor, o agente envia a notificacao
+                 atvMemoriaBaixaTrap."
+    ::= { atvDinamico 4 }
+
+-- ---------------------------------------------------------------
+-- 3) Tabela com tres colunas acessiveis
+-- ---------------------------------------------------------------
+
+atvDiscoTable OBJECT-TYPE
+    SYNTAX      SEQUENCE OF AtvDiscoEntry
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION "Tabela com os sistemas de arquivos montados na maquina."
+    ::= { atvTabelas 1 }
+
+atvDiscoEntry OBJECT-TYPE
+    SYNTAX      AtvDiscoEntry
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION "Uma linha por sistema de arquivos."
+    INDEX       { atvDiscoIndice }
+    ::= { atvDiscoTable 1 }
+
+AtvDiscoEntry ::= SEQUENCE {
+    atvDiscoIndice      Integer32,
+    atvDiscoMontagem    DisplayString,
+    atvDiscoUsoPercent  Gauge32,
+    atvDiscoObservacao  DisplayString
+}
+
+atvDiscoIndice OBJECT-TYPE
+    SYNTAX      Integer32 (1..128)
+    MAX-ACCESS  not-accessible
+    STATUS      current
+    DESCRIPTION "Indice da linha."
+    ::= { atvDiscoEntry 1 }
+
+atvDiscoMontagem OBJECT-TYPE
+    SYNTAX      DisplayString (SIZE (0..128))
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Ponto de montagem do sistema de arquivos."
+    ::= { atvDiscoEntry 2 }
+
+atvDiscoUsoPercent OBJECT-TYPE
+    SYNTAX      Gauge32 (0..100)
+    UNITS       "percent"
+    MAX-ACCESS  read-only
+    STATUS      current
+    DESCRIPTION "Percentual de uso do sistema de arquivos."
+    ::= { atvDiscoEntry 3 }
+
+atvDiscoObservacao OBJECT-TYPE
+    SYNTAX      DisplayString (SIZE (0..128))
+    MAX-ACCESS  read-write
+    STATUS      current
+    DESCRIPTION "Anotacao livre do gerente sobre esta linha. Pode ser alterada
+                 por SET e e gravada em disco pelo agente."
+    ::= { atvDiscoEntry 4 }
+
+-- ---------------------------------------------------------------
+-- 4) Notificacao (trap) enviada do agente para o gerente
+-- ---------------------------------------------------------------
+
+atvMemoriaBaixaTrap NOTIFICATION-TYPE
+    OBJECTS     { atvNomeEquipe, atvMemoriaLivreMB, atvLimiteMemoriaMB }
+    STATUS      current
+    DESCRIPTION "Enviada quando a memoria livre fica abaixo de atvLimiteMemoriaMB."
+    ::= { atvNotificacoes 1 }
+
+END
