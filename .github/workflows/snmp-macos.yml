@@ -1,0 +1,214 @@
+name: SNMP no macOS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  snmp:
+    runs-on: macos-latest
+
+    steps:
+      - name: Baixar os arquivos do repositorio
+        uses: actions/checkout@v4
+
+      - name: 0. Identificacao da maquina (prova de que e macOS)
+        run: |
+          echo "===== SISTEMA OPERACIONAL ====="
+          sw_vers
+          echo
+          echo "===== HARDWARE ====="
+          uname -a
+          sysctl -n machdep.cpu.brand_string
+          echo
+          echo "===== DATA E HORA ====="
+          date
+
+      - name: 1. Instalar o Net-SNMP
+        run: |
+          brew install net-snmp
+          echo "NETSNMP=$(brew --prefix net-snmp)" >> $GITHUB_ENV
+          echo "$(brew --prefix net-snmp)/bin:$(brew --prefix net-snmp)/sbin" >> $GITHUB_PATH
+
+      - name: 2. Conferir a instalacao
+        run: |
+          echo "===== CAMINHOS ====="
+          which snmpd snmpget snmpgetnext snmpset snmpwalk snmptrap snmptrapd
+          echo
+          echo "===== VERSAO ====="
+          snmpd --version
+
+      - name: 3. Preparar MIB, agente e arquivos de configuracao
+        run: |
+          # MIB customizada, para as ferramentas traduzirem os OIDs em nomes
+          mkdir -p ~/.snmp/mibs
+          cp agente/ATIVIDADE-SNMP-MIB.txt ~/.snmp/mibs/
+          # copia tambem para a pasta do sistema, para o snmptrapd (que roda como root) achar
+          sudo mkdir -p $NETSNMP/share/snmp/mibs
+          sudo cp agente/ATIVIDADE-SNMP-MIB.txt $NETSNMP/share/snmp/mibs/
+
+          # script do agente (objetos customizados)
+          sudo mkdir -p /opt/snmp-atividade /var/lib/snmp
+          sudo cp agente/agente_atividade.py /opt/snmp-atividade/
+          sudo chmod +x /opt/snmp-atividade/agente_atividade.py
+
+          # configuracao do agente
+          cat > /tmp/snmpd.conf <<'EOF'
+          agentaddress udp:161
+          rocommunity public  default
+          rwcommunity private default
+          sysLocation  Laboratorio de Redes, macOS
+          sysContact   equipe@exemplo.com
+          sysServices  72
+          trap2sink 127.0.0.1 public
+          authtrapenable 1
+          pass_persist .1.3.6.1.4.1.99999 /opt/snmp-atividade/agente_atividade.py
+          EOF
+
+          # configuracao do receptor de traps
+          cat > /tmp/snmptrapd.conf <<'EOF'
+          authCommunity log,execute,net public
+          disableAuthorization yes
+          EOF
+
+          echo "===== snmpd.conf ====="
+          cat /tmp/snmpd.conf
+          echo
+          echo "===== MIB customizada (trecho) ====="
+          head -40 agente/ATIVIDADE-SNMP-MIB.txt
+
+      - name: 4. Subir o receptor de traps (gerente) e o agente
+        run: |
+          sudo $NETSNMP/sbin/snmptrapd -c /tmp/snmptrapd.conf -Lf /tmp/traps.log
+          sleep 3
+          sudo $NETSNMP/sbin/snmpd -c /tmp/snmpd.conf -Lf /tmp/snmpd.log
+          sleep 3
+          echo "===== PROCESSOS EM EXECUCAO ====="
+          ps ax | grep -E "snmpd|snmptrapd" | grep -v grep
+          echo
+          echo "===== PORTAS ====="
+          sudo lsof -nP -iUDP:161 -iUDP:162 || true
+
+      - name: 5. Consultas Gerente para Agente (Get, GetNext, Set)
+        run: |
+          echo "===== GET: sysDescr.0 ====="
+          snmpget -v 2c -c public localhost sysDescr.0
+          echo
+          echo "===== GET: sysContact.0 ====="
+          snmpget -v 2c -c public localhost sysContact.0
+          echo
+          echo "===== GETNEXT a partir de sysUpTime.0 (deve devolver sysContact.0) ====="
+          snmpgetnext -v 2c -c public localhost sysUpTime.0
+          echo
+          echo "===== SET: sysLocation.0 ====="
+          echo "valor antes:"
+          snmpget -v 2c -c public localhost sysLocation.0
+          snmpset -v 2c -c private localhost sysLocation.0 s "Sala 12, macOS, alterado por SET"
+          echo "valor depois:"
+          snmpget -v 2c -c public localhost sysLocation.0
+          echo
+          echo "===== WALK no grupo system ====="
+          snmpwalk -v 2c -c public localhost system
+
+      - name: 6. Objeto escalar estatico, read-write
+        run: |
+          echo "===== GET: valor inicial ====="
+          snmpget -v 2c -c public -m +ATIVIDADE-SNMP-MIB localhost ATIVIDADE-SNMP-MIB::atvNomeEquipe.0
+          echo
+          echo "===== SET: grava um valor novo ====="
+          snmpset -v 2c -c private -m +ATIVIDADE-SNMP-MIB localhost \
+            ATIVIDADE-SNMP-MIB::atvNomeEquipe.0 s "Joao Guilherme e Caio Vidal"
+          echo
+          echo "===== GET: confirma o valor gravado ====="
+          snmpget -v 2c -c public -m +ATIVIDADE-SNMP-MIB localhost ATIVIDADE-SNMP-MIB::atvNomeEquipe.0
+          echo
+          echo "===== SET em objeto read-only deve ser recusado ====="
+          snmpset -v 2c -c private localhost .1.3.6.1.4.1.99999.1.2.1.0 s "teste" || true
+
+      - name: 7. Objeto dinamico, calculado a cada consulta
+        run: |
+          echo "===== PRIMEIRA CONSULTA ====="
+          snmpget -v 2c -c public -m +ATIVIDADE-SNMP-MIB localhost \
+            ATIVIDADE-SNMP-MIB::atvDataHora.0 \
+            ATIVIDADE-SNMP-MIB::atvMemoriaLivreMB.0 \
+            ATIVIDADE-SNMP-MIB::atvProcessosAtivos.0
+          echo
+          echo "aguardando 5 segundos..."
+          sleep 5
+          echo
+          echo "===== SEGUNDA CONSULTA: os valores mudaram ====="
+          snmpget -v 2c -c public -m +ATIVIDADE-SNMP-MIB localhost \
+            ATIVIDADE-SNMP-MIB::atvDataHora.0 \
+            ATIVIDADE-SNMP-MIB::atvMemoriaLivreMB.0 \
+            ATIVIDADE-SNMP-MIB::atvProcessosAtivos.0
+
+      - name: 8. Tabela com tres colunas
+        run: |
+          echo "===== WALK na tabela ====="
+          snmpwalk -v 2c -c public -m +ATIVIDADE-SNMP-MIB localhost ATIVIDADE-SNMP-MIB::atvDiscoTable
+          echo
+          echo "===== A mesma tabela em formato de planilha ====="
+          snmptable -v 2c -c public -m +ATIVIDADE-SNMP-MIB -Cb localhost ATIVIDADE-SNMP-MIB::atvDiscoTable
+          echo
+          echo "===== SET na coluna gravavel (observacao da linha 1) ====="
+          snmpset -v 2c -c private -m +ATIVIDADE-SNMP-MIB localhost \
+            ATIVIDADE-SNMP-MIB::atvDiscoObservacao.1 s "disco raiz do sistema"
+          echo
+          echo "===== Tabela depois do SET ====="
+          snmptable -v 2c -c public -m +ATIVIDADE-SNMP-MIB -Cb localhost ATIVIDADE-SNMP-MIB::atvDiscoTable
+          echo
+          echo "===== GETNEXT percorrendo a tabela manualmente ====="
+          snmpgetnext -v 2c -c public -m +ATIVIDADE-SNMP-MIB localhost ATIVIDADE-SNMP-MIB::atvDiscoTable
+          snmpgetnext -v 2c -c public -m +ATIVIDADE-SNMP-MIB localhost ATIVIDADE-SNMP-MIB::atvDiscoMontagem.1
+
+      - name: 9. Walk completo na subarvore customizada
+        run: |
+          snmpwalk -v 2c -c public -m +ATIVIDADE-SNMP-MIB localhost .1.3.6.1.4.1.99999
+
+      - name: 10. Traps do Agente para o Gerente
+        run: |
+          echo "===== TRAP 1: coldStart, disparada ao reiniciar o agente ====="
+          sudo pkill -f "snmpd -c /tmp/snmpd.conf" || true
+          sleep 2
+          sudo $NETSNMP/sbin/snmpd -c /tmp/snmpd.conf -Lf /tmp/snmpd.log
+          sleep 3
+
+          echo "===== TRAP 2: trap customizada da MIB do grupo ====="
+          snmptrap -v 2c -c public localhost:162 "" .1.3.6.1.4.1.99999.0.1 \
+            .1.3.6.1.4.1.99999.1.1.1.0 s "Joao Guilherme e Caio Vidal" \
+            .1.3.6.1.4.1.99999.1.2.2.0 u 128 \
+            .1.3.6.1.4.1.99999.1.2.4.0 i 512
+          sleep 2
+
+          echo "===== TRAP 3: falha de autenticacao, comunidade errada ====="
+          snmpget -v 2c -c comunidade_errada localhost sysDescr.0 || true
+          sleep 3
+
+          echo
+          echo "===== TRAPS RECEBIDAS PELO GERENTE (snmptrapd) ====="
+          sudo cat /tmp/traps.log
+
+      - name: 11. Persistencia do SET apos reiniciar o agente
+        run: |
+          echo "===== Valores gravados em disco pelo agente ====="
+          sudo cat /var/lib/snmp/atividade_estado.json
+          echo
+          echo "===== Consulta apos o reinicio do agente feito no passo 10 ====="
+          snmpget -v 2c -c public -m +ATIVIDADE-SNMP-MIB localhost ATIVIDADE-SNMP-MIB::atvNomeEquipe.0
+          snmpget -v 2c -c public -m +ATIVIDADE-SNMP-MIB localhost ATIVIDADE-SNMP-MIB::atvDiscoObservacao.1
+
+      - name: 12. Guardar os logs como anexo da execucao
+        if: always()
+        run: |
+          mkdir -p saida
+          sudo cp /tmp/traps.log saida/ 2>/dev/null || true
+          sudo cp /tmp/snmpd.log saida/ 2>/dev/null || true
+          sudo cp /var/lib/snmp/atividade_estado.json saida/ 2>/dev/null || true
+          cp /tmp/snmpd.conf saida/
+          sudo chmod -R a+r saida
+
+      - name: 13. Upload dos logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-snmp-macos
+          path: saida/
